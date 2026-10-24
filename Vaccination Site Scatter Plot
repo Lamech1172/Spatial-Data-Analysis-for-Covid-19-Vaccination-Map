@@ -1,0 +1,64 @@
+#scatter plot
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Set random seed for reproducible sample points
+np.random.seed(42)
+
+# --- 1. Simulate data reflecting the plot's distribution ---
+n_districts = 650
+
+# Active vaccination sites (heavily right-skewed)
+active_sites = np.random.exponential(scale=70, size=n_districts) + np.random.uniform(0, 10, size=n_districts)
+
+# Total doses administered (correlated with sites, with heteroscedastic noise)
+total_doses = active_sites * np.random.uniform(0.005, 0.02, size=n_districts) + np.random.exponential(scale=0.5, size=n_districts)
+
+# Add explicit prominent high-end outliers visible in the image
+outlier_sites = np.array([500, 750, 950, 590, 630])
+outlier_doses = np.array([12.6, 10.5, 11.9, 4.9, 3.2])
+active_sites = np.concatenate([active_sites, outlier_sites])
+total_doses = np.concatenate([total_doses, outlier_doses])
+
+# Completion Ratio (Dose 2 / Dose 1), generally bounded between 0.15 and 0.85
+completion_ratio = np.clip(np.random.normal(loc=0.42, scale=0.15, size=len(active_sites)), 0.15, 0.85)
+
+# --- 2. Plotting ---
+fig, ax = plt.subplots(figsize=(7, 5.5), dpi=150)
+
+# Scatter plot using the viridis colormap
+scatter = ax.scatter(
+    active_sites,
+    total_doses,
+    c=completion_ratio,
+    cmap="viridis",
+    s=22,
+    alpha=0.65,
+    edgecolors="none",
+    vmin=0.15,
+    vmax=0.85
+)
+
+# Axis labels and limits
+ax.set_xlabel("Active Vaccination Sites in District", fontsize=9)
+ax.set_ylabel("Total Doses Administered (in Millions)", fontsize=9)
+ax.set_xlim(-20, 1020)
+ax.set_ylim(-0.5, 13.5)
+
+# Grid styling
+ax.grid(True, linestyle="-", color="#e8e8e8", linewidth=0.8, zorder=0)
+ax.set_axisbelow(True)
+
+# Spines styling
+for spine in ["top", "right", "left", "bottom"]:
+    ax.spines[spine].set_color("#cccccc")
+
+# Colorbar setup
+cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+cbar.set_label("Completion Ratio (Dose 2 / Dose 1)", fontsize=8, labelpad=8)
+cbar.ax.tick_params(labelsize=8)
+cbar.outline.set_edgecolor("#cccccc")
+
+plt.tight_layout()
+plt.show()
