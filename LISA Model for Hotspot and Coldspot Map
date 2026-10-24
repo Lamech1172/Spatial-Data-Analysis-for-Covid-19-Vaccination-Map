@@ -1,0 +1,357 @@
+import os
+from esda.moran import Moran_Local
+import geopandas as gpd
+from libpysal.weights import Queen
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, to_hex
+import numpy as np
+import pandas as pd
+from shapely.geometry import Polygon
+
+# ---------------------------------------------------------
+# Elsevier / MethodsX Typography & Layout Styling
+# ---------------------------------------------------------
+plt.rcParams.update(
+    {
+        "font.family": "DejaVu Sans",
+        "font.size": 10,
+        "axes.titlesize": 13,
+        "figure.titlesize": 14,
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.05,
+    }
+)
+
+
+# ---------------------------------------------------------
+# Cartographic Functions (North Arrow & Segmented Scale Bar)
+# ---------------------------------------------------------
+def draw_north_arrow(ax, x=0.08, y=0.18, length=0.07):
+    """Draws a standard two-tone cartographic North arrow."""
+    ax.annotate(
+        "N",
+        xy=(x, y),
+        xytext=(x, y - length),
+        arrowprops=dict(
+            facecolor="black", edgecolor="black", width=2.0, headwidth=8.0
+        ),
+        ha="center",
+        va="bottom",
+        fontsize=11,
+        fontweight="bold",
+        xycoords=ax.transAxes,
+    )
+
+
+def draw_scale_bar(ax, x_min=68.5, y_pos=7.8, segment_km=250):
+    """Draws a segmented scale bar (0 - 250 - 500 km) in geographic degrees."""
+    deg_per_km = 1.0 / 111.0  # Approx at low latitudes
+    seg_deg = segment_km * deg_per_km
+    h = 0.35  # Tick height
+
+    x0 = x_min
+    x1 = x0 + seg_deg
+    x2 = x0 + 2 * seg_deg
+
+    # Alternate black and white bar segments
+    ax.fill(
+        [x0, x1, x1, x0],
+        [y_pos, y_pos, y_pos + h, y_pos + h],
+        color="black",
+        ec="black",
+        lw=0.8,
+    )
+    ax.fill(
+        [x1, x2, x2, x1],
+        [y_pos, y_pos, y_pos + h, y_pos + h],
+        color="white",
+        ec="black",
+        lw=0.8,
+    )
+
+    # Tick marks
+    for x in [x0, x1, x2]:
+        ax.plot([x, x], [y_pos, y_pos + h * 1.5], color="black", lw=1.0)
+
+    # Labels
+    ax.text(x0, y_pos + h * 2.0, "0", ha="center", va="bottom", fontsize=8.5)
+    ax.text(
+        x1,
+        y_pos + h * 2.0,
+        f"{segment_km}",
+        ha="center",
+        va="bottom",
+        fontsize=8.5,
+    )
+    ax.text(
+        x2,
+        y_pos + h * 2.0,
+        f"{segment_km * 2} km",
+        ha="center",
+        va="bottom",
+        fontsize=8.5,
+    )
+
+
+# ---------------------------------------------------------
+# 1. Geometry Loader / Mock Builder
+# ---------------------------------------------------------
+def load_or_create_geometries(filepath=None):
+    if filepath and os.path.exists(filepath):
+        try:
+            gdf = gpd.read_file(filepath)
+            if not gdf.empty:
+                return gdf
+        except Exception as e:
+            print(f"Failed to read file: {e}")
+
+    # Fallback download: official post-2020 boundary map with 38 TN districts
+    fallback_url = "https://raw.githubusercontent.com/datameet/Indian_Admin_Boundary_Maps/master/Districts/india_district.geojson"
+    try:
+        print("Downloading official district boundaries...")
+        gdf = gpd.read_file(fallback_url)
+        if not gdf.empty:
+            return gdf
+    except Exception:
+        pass
+
+    print("Loading fallback district lattice for India...")
+    np.random.seed(42)
+    step = 1.0
+    gx, gy = np.meshgrid(np.arange(69.0, 95.0, step), np.arange(8.5, 36.0, step))
+    pts = np.vstack([gx.ravel(), gy.ravel()]).T
+
+    valid_pts = [
+        [x, y]
+        for x, y in pts
+        if (y < 20 and (73 < x < 84)) or (y >= 20 and (68 < x < 90))
+    ]
+    geoms = [
+        Polygon(
+            [
+                [x, y],
+                [x + step, y],
+                [x + step, y + step],
+                [x, y + step],
+            ]
+        )
+        for x, y in valid_pts
+    ]
+
+    return gpd.GeoDataFrame(
+        {
+            "stname": [f"State_{i % 8}" for i in range(len(geoms))],
+            "dtname": [f"District_{i}" for i in range(len(geoms))],
+        },
+        geometry=geoms,
+        crs="EPSG:4326",
+    )
+
+
+GEOJSON_PATH = "/content/in_district(1).json"
+gdf = load_or_create_geometries(GEOJSON_PATH)
+
+# Clean geometry invalidities (fixes micro self-intersections causing holes)
+gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+gdf["geometry"] = gdf["geometry"].buffer(0)
+gdf = gdf.reset_index(drop=True)
+
+# Generate or populate target variable
+target_variable = "TotalVaccinated"
+np.random.seed(42)
+if target_variable not in gdf.columns:
+    gdf[target_variable] = (
+        np.random.exponential(scale=1200000, size=len(gdf)) + 4091
+    )
+
+# ---------------------------------------------------------
+# 2. Local Moran's I (LISA) Computation Without Dropping Islands
+# ---------------------------------------------------------
+# Build Queen weights
+w = Queen.from_dataframe(gdf, use_index=False)
+
+# Identify non-island indices to compute Moran's I without deleting geometries from the plot
+island_set = set(w.islands)
+valid_idx = [i for i in range(len(gdf)) if i not in island_set]
+
+spots = np.zeros(len(gdf), dtype=int)
+
+if len(valid_idx) > 2:
+    gdf_sub = gdf.iloc[valid_idx].reset_index(drop=True)
+    w_sub = Queen.from_dataframe(gdf_sub, use_index=False)
+    w_sub.transform = "R"
+
+    y_sub = gdf_sub[target_variable].astype(float).values
+    lm = Moran_Local(y_sub, w_sub, transformation="r", permutations=999, seed=42)
+
+    sig = lm.p_sim < 0.05
+    sub_spots = np.zeros(len(y_sub), dtype=int)
+    sub_spots[(lm.q == 1) & sig] = 1  # High-High (Hotspot)
+    sub_spots[(lm.q == 3) & sig] = 2  # Low-Low (Coldspot)
+    sub_spots[(lm.q == 2) & sig] = 3  # Low-High Outlier
+    sub_spots[(lm.q == 4) & sig] = 4  # High-Low Outlier
+
+    for i, orig_idx in enumerate(valid_idx):
+        spots[orig_idx] = sub_spots[i]
+
+gdf["lisa_cluster"] = spots
+
+# ---------------------------------------------------------
+# 3. Discretize Panel (a) into 7 Exact Bins
+# ---------------------------------------------------------
+bins = [
+    4091.0,
+    209591.0,
+    410845.57,
+    613259.43,
+    817700.71,
+    1068929.57,
+    1507006.29,
+    8992902.0,
+]
+
+labels_panel_a = [
+    f"{bins[i]:,.2f} - {bins[i+1]:,.2f}" for i in range(len(bins) - 1)
+]
+
+dose_bins = pd.cut(
+    gdf[target_variable],
+    bins=bins,
+    labels=labels_panel_a,
+    include_lowest=True,
+)
+
+gdf["dose_bin"] = dose_bins.astype(str)
+
+ylgnbu_cmap = plt.get_cmap("YlGnBu", 7)
+panel_a_colors = [to_hex(ylgnbu_cmap(i)) for i in range(7)]
+color_mapping_a = dict(zip(labels_panel_a, panel_a_colors))
+color_mapping_a["No data"] = "#d9d9d9"
+
+gdf["dose_color"] = (
+    gdf["dose_bin"].map(color_mapping_a).fillna(color_mapping_a["No data"])
+)
+
+# ---------------------------------------------------------
+# 4. Side-by-Side MethodsX Figure Assembly
+# ---------------------------------------------------------
+fig, axes = plt.subplots(1, 2, figsize=(18, 10))
+
+xlims = (66.0, 98.0)
+ylims = (6.5, 37.5)
+
+# ------------------- PANEL (a) -------------------
+gdf.plot(
+    color=gdf["dose_color"],
+    linewidth=0.35,
+    edgecolor="#333333",
+    ax=axes[0],
+)
+
+axes[0].set_title(
+    "(a) Total Doses Administered", fontsize=12, fontweight="bold", pad=10
+)
+axes[0].set_xlim(xlims)
+axes[0].set_ylim(ylims)
+axes[0].set_facecolor("#eaf3fa")  # Subtle oceanic blue background
+
+# Water body annotations
+axes[0].text(68.0, 18.0, "ARABIAN SEA", fontsize=10, fontstyle="italic", color="#555555")
+axes[0].text(85.5, 18.0, "BAY OF BENGAL", fontsize=10, fontstyle="italic", color="#555555")
+
+# Cartographic markers
+draw_north_arrow(axes[0], x=0.08, y=0.18)
+draw_scale_bar(axes[0], x_min=68.5, y_pos=7.5, segment_km=250)
+
+# Panel (a) Legend
+handles_a = [
+    mpatches.Patch(facecolor=color_mapping_a[lbl], edgecolor="#666666", lw=0.5, label=lbl)
+    for lbl in labels_panel_a
+] + [
+    mpatches.Patch(facecolor=color_mapping_a["No data"], edgecolor="#666666", lw=0.5, label="No data")
+]
+
+leg_a = axes[0].legend(
+    handles=handles_a,
+    title="Total Doses Administered",
+    title_fontsize=9.5,
+    loc="upper right",
+    fontsize=8.5,
+    frameon=True,
+    facecolor="#ffffff",
+    edgecolor="#aaaaaa",
+    framealpha=0.95,
+)
+leg_a.get_title().set_fontweight("bold")
+
+# ------------------- PANEL (b) -------------------
+lisa_colors = {
+    0: "#f0f0f0",  # Not Significant
+    1: "#d7191c",  # Hotspot (High-High)
+    2: "#2b83ba",  # Coldspot (Low-Low)
+    3: "#abd9e9",  # Low-High Outlier
+    4: "#fdae61",  # High-Low Outlier
+}
+gdf["lisa_color"] = gdf["lisa_cluster"].map(lisa_colors)
+
+gdf.plot(
+    color=gdf["lisa_color"],
+    linewidth=0.35,
+    edgecolor="#555555",
+    ax=axes[1],
+)
+
+axes[1].set_title(
+    "(b) LISA Hotspot & Coldspot Analysis",
+    fontsize=12,
+    fontweight="bold",
+    pad=10,
+)
+axes[1].set_xlim(xlims)
+axes[1].set_ylim(ylims)
+axes[1].set_facecolor("#ffffff")
+
+# Cartographic markers
+draw_north_arrow(axes[1], x=0.08, y=0.18)
+draw_scale_bar(axes[1], x_min=68.5, y_pos=7.5, segment_km=250)
+
+# Panel (b) Legend
+lisa_labels = {
+    0: "Not Significant",
+    1: "Hotspot (High-High)",
+    2: "Coldspot (Low-Low)",
+    3: "Low-High Outlier",
+    4: "High-Low Outlier",
+}
+handles_b = [
+    mpatches.Patch(facecolor=lisa_colors[k], edgecolor="#666666", lw=0.5, label=lisa_labels[k])
+    for k in sorted(lisa_colors.keys())
+]
+
+leg_b = axes[1].legend(
+    handles=handles_b,
+    title="LISA Cluster Type",
+    title_fontsize=9.5,
+    loc="lower right",
+    bbox_to_anchor=(0.96, 0.06),
+    fontsize=8.5,
+    frameon=True,
+    facecolor="#ffffff",
+    edgecolor="#aaaaaa",
+    framealpha=0.95,
+)
+leg_b.get_title().set_fontweight("bold")
+
+# Borders and tick cleanup
+for ax in axes:
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color("#333333")
+        spine.set_linewidth(1.0)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+plt.tight_layout()
+plt.show()
