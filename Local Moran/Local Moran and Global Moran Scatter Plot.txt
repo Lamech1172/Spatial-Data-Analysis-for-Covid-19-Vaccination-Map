@@ -1,0 +1,205 @@
+from esda.moran import Moran, Moran_Local
+import geopandas as gpd
+from libpysal.weights import Queen, lag_spatial
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import csv
+import re
+import difflib
+from collections import defaultdict
+import os
+
+# Configuration paths matching your setup
+CSV_PATH = "/content/cowin_vaccine_data_districtwise.csv"
+GEOJSON_PATH = "/content/in_district(1).json"
+
+# Direct execution of the pipeline to build the 'merged' dataset globally
+def extract_latest_district_data(csv_path):
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        date_row = next(reader)
+        metric_row = next(reader)
+    dates = date_row[6:]
+    n_blocks = len(dates) // 10
+    if n_blocks == 0:
+        raise ValueError("No vaccination date blocks detected.")
+    uniq_dates = [str(dates[i * 10] or "").strip() for i in range(n_blocks)]
+    df_raw = pd.read_csv(csv_path, skiprows=2, header=None, dtype=str, encoding="utf-8-sig", low_memory=False)
+    meta = df_raw.iloc[:, :6].copy()
+    meta.columns = ["S_No", "State_Code", "State", "District_Key", "Cowin_Key", "District"]
+    data = df_raw.iloc[:, 6:].to_numpy()
+
+    def to_float(value):
+        if value is None or pd.isna(value):
+            return np.nan
+        val_str = str(value).strip().replace(",", "")
+        try:
+            return float(val_str) if val_str else np.nan
+        except:
+            return np.nan
+
+    rows = []
+    for r in range(data.shape[0]):
+        row = data[r]
+        record = {"LastDate": None, "FirstDose": np.nan, "SecondDose": np.nan, "Male": np.nan, "Female": np.nan, "Transgender": np.nan, "Covaxin": np.nan, "CoviShield": np.nan}
+        for b in range(n_blocks - 1, -1, -1):
+            idx = b * 10
+            if idx + 9 >= len(row):
+                continue
+            first_dose = to_float(row[idx + 3])
+            if not np.isnan(first_dose):
+                record["LastDate"] = uniq_dates[b]
+                record["FirstDose"] = first_dose
+                second = to_float(row[idx + 4])
+                male = to_float(row[idx + 5])
+                female = to_float(row[idx + 6])
+                trans = to_float(row[idx + 7])
+                covax = to_float(row[idx + 8])
+                covish = to_float(row[idx + 9])
+                record["SecondDose"] = 0.0 if np.isnan(second) else second
+                record["Male"] = 0.0 if np.isnan(male) else male
+                record["Female"] = 0.0 if np.isnan(female) else female
+                record["Transgender"] = 0.0 if np.isnan(trans) else trans
+                record["Covaxin"] = 0.0 if np.isnan(covax) else covax
+                record["CoviShield"] = 0.0 if np.isnan(covish) else covish
+                break
+        rows.append(record)
+    result = pd.concat([meta.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
+    result = result.dropna(subset=["FirstDose"]).reset_index(drop=True)
+    result["TotalVaccinated"] = result["FirstDose"]
+    result["FullyVaccinated"] = result["SecondDose"]
+    result["State"] = result["State"].fillna("").astype(str).str.strip()
+    result["District"] = result["District"].fillna("").astype(str).str.strip()
+    return result
+
+def load_district_geometries(geojson_path):
+    gdf = gpd.read_file(geojson_path)
+    if gdf.crs is None:
+        gdf = gdf.set_crs(epsg=4326)
+    else:
+        gdf = gdf.to_crs(epsg=4326)
+    return gdf
+
+def match_districts(df, gdf):
+    df = df.copy()
+    gdf = gdf.copy()
+    st_candidates = [c for c in gdf.columns if c.lower() in ["stname", "state_name", "statename", "state"]]
+    dt_candidates = [c for c in gdf.columns if c.lower() in ["dtname", "district_name", "districtname", "district"]]
+    state_col = st_candidates[0] if st_candidates else "stname"
+    dist_col = dt_candidates[0] if dt_candidates else "dtname"
+    gdf["state_norm"] = gdf[state_col].apply(lambda x: str(x).lower().replace(" ", ""))
+    gdf["dist_norm"] = gdf[dist_col].apply(lambda x: str(x).lower().replace(" ", ""))
+    df["state_norm"] = df["State"].apply(lambda x: str(x).lower().replace(" ", ""))
+    df["dist_norm"] = df["District"].apply(lambda x: str(x).lower().replace(" ", ""))
+    state_to_geo = defaultdict(list)
+    for idx, row in gdf.iterrows():
+        state_to_geo[row["state_norm"]].append((row["dist_norm"], idx))
+    matched_idx = []
+    for _, row in df.iterrows():
+        sn, dn = row["state_norm"], row["dist_norm"]
+        candidates = state_to_geo.get(sn, [])
+        h = [idx for (n, idx) in candidates if n == dn]
+        if h:
+            matched_idx.append(h[0])
+            continue
+        if candidates:
+            cand_names = [n for (n, _) in candidates]
+            best = difflib.get_close_matches(dn, cand_names, n=1, cutoff=0.6)
+            if best:
+                matched_idx.append([idx for (n, idx) in candidates if n == best[0]][0])
+                continue
+        matched_idx.append(None)
+    df["geo_idx"] = matched_idx
+    return df, gdf, state_col, dist_col
+
+def build_merged_geodataframe(df_matched, gdf, state_column, district_column):
+    matched_df = df_matched[df_matched["geo_idx"].notna()].copy()
+    matched_df["geo_idx"] = matched_df["geo_idx"].astype(int)
+    agg = matched_df.groupby("geo_idx").agg(
+        TotalVaccinated=("TotalVaccinated", "sum"),
+        FullyVaccinated=("FullyVaccinated", "sum"),
+        State=("State", "first"),
+        District=("District", "first")
+    ).reset_index()
+    geometry_df = gdf.copy()
+    geometry_df["geo_idx"] = geometry_df.index
+    merged_df = geometry_df.merge(agg, on="geo_idx", how="left")
+    merged_df["TotalVaccinated"] = pd.to_numeric(merged_df["TotalVaccinated"], errors="coerce").fillna(0)
+    return merged_df
+
+# Execute Pipeline to establish variables globally
+dist_df = extract_latest_district_data(CSV_PATH)
+geom_gdf = load_district_geometries(GEOJSON_PATH)
+df_m, geom_gdf, state_col, dist_col = match_districts(dist_df, geom_gdf)
+merged = build_merged_geodataframe(df_m, geom_gdf, state_col, dist_col)
+
+# Apply Moran's spatial autocorrelation
+target_gdf = merged.copy()
+target_gdf = target_gdf[target_gdf.geometry.notna() & ~target_gdf.geometry.is_empty].reset_index(drop=True)
+target_gdf["doses_pc"] = pd.to_numeric(target_gdf["TotalVaccinated"], errors="coerce").fillna(0)
+
+w = Queen.from_dataframe(target_gdf, use_index=False)
+w.transform = "R"
+
+# Handle isolated polygons (islands) mathematically safely
+if len(w.islands) > 0:
+    non_islands = [i for i in range(len(target_gdf)) if i not in set(w.islands)]
+    target_gdf = target_gdf.iloc[non_islands].reset_index(drop=True)
+    w = Queen.from_dataframe(target_gdf, use_index=False)
+    w.transform = "R"
+
+y_series = target_gdf["doses_pc"]
+lm = Moran_Local(y_series, w, permutations=999, seed=42)
+gm = Moran(y_series, w)
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7), dpi=300)
+
+# Plot (a) Local Signficance Regimes
+target_gdf["p_sim"] = lm.p_sim
+target_gdf["sig_cat"] = "Not Significant"
+target_gdf.loc[target_gdf["p_sim"] <= 0.05, "sig_cat"] = "p < 0.05"
+target_gdf.loc[target_gdf["p_sim"] <= 0.01, "sig_cat"] = "p < 0.01"
+target_gdf.loc[target_gdf["p_sim"] <= 0.001, "sig_cat"] = "p < 0.001"
+
+palette = {
+    "Not Significant": "#f0f0f0",
+    "p < 0.05": "#bae4b3",
+    "p < 0.01": "#74c476",
+    "p < 0.001": "#006d2c",
+}
+
+for cat, color in palette.items():
+    subset = target_gdf[target_gdf["sig_cat"] == cat]
+    if not subset.empty:
+        subset.plot(
+            ax=ax1,
+            color=color,
+            edgecolor="#555555",
+            linewidth=0.15,
+            label=cat,
+        )
+
+ax1.set_title("(a) Local Moran's I Pseudo-Significance Regimes", fontsize=11, fontweight="bold")
+ax1.legend(loc="lower right", frameon=True, fontsize=8)
+ax1.axis("off")
+
+# Plot (b) Standardized Scatter Plot using lag_spatial
+z_x = (y_series - y_series.mean()) / y_series.std()
+spatial_lag_y = lag_spatial(w, y_series)
+w_z_x = (spatial_lag_y - spatial_lag_y.mean()) / spatial_lag_y.std()
+
+ax2.scatter(z_x, w_z_x, color="#2b5c8f", alpha=0.6, s=18, edgecolors="none")
+b, a = np.polyfit(z_x, w_z_x, deg=1)
+ax2.plot(z_x, a + b * z_x, color="red", lw=1.5, label=f"Moran's I = {gm.I:.3f}")
+ax2.axhline(0, color="grey", linestyle="--", lw=0.8)
+ax2.axvline(0, color="grey", linestyle="--", lw=0.8)
+ax2.set_xlabel("Standardized Vaccination Rate (Z-score)", fontsize=9)
+ax2.set_ylabel("Spatial Lag of Vaccination Rate (W * Z)", fontsize=9)
+ax2.set_title(f"(b) Global Moran Scatter Plot (I = {gm.I:.3f}, z = {gm.z_sim:.2f})", fontsize=11, fontweight="bold")
+ax2.legend(loc="upper left", fontsize=8)
+ax2.grid(True, linestyle=":", alpha=0.6)
+
+plt.tight_layout()
+plt.savefig("Fig7_Moran_Significance_Diagnostic.png", dpi=300)
+plt.show()

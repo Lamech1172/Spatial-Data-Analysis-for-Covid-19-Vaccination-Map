@@ -1,0 +1,51 @@
+#Lorenz Curve
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+def lorenz_curve(data):
+    """Computes the Lorenz curve coordinates and Gini coefficient."""
+    data = np.sort(data)
+    n = len(data)
+    cum_share_resource = np.cumsum(data) / np.sum(data)
+    cum_share_resource = np.insert(cum_share_resource, 0, 0)
+    cum_share_districts = np.linspace(0, 1, n + 1)
+
+    # Gini coefficient: area between equality line and Lorenz curve * 2
+    gini = 1 - 2 * np.trapezoid(cum_share_resource, cum_share_districts)
+    return cum_share_districts, cum_share_resource, gini
+
+# --- Generate matching curves for demonstration ---
+x = np.linspace(0, 1, 200)
+
+# Power-law curves parameterized to match the Gini values: G = (p - 1) / (p + 1) -> p = (1 + G) / (1 - G)
+curves = [
+    {"label": "First Dose (G = 0.4380)", "color": "#438a5e", "gini": 0.4380},
+    {"label": "Total Doses (G = 0.4493)", "color": "#33668a", "gini": 0.4493},
+    {"label": "Second Dose (G = 0.4991)", "color": "#e07a5f", "gini": 0.4991},
+    {"label": "Active Sites (G = 0.5184)", "color": "#a83344", "gini": 0.5184},
+]
+
+# --- Plot Setup ---
+plt.figure(figsize=(7, 6), dpi=150)
+
+# Line of Absolute Equality
+plt.plot([0, 1], [0, 1], linestyle="--", color="#333333", linewidth=1.2, label="Line of Absolute Equality (G = 0.00)")
+
+# Plot Lorenz curves
+for c in curves:
+    power = (1 + c["gini"]) / (1 - c["gini"])
+    y = x ** power
+    plt.plot(x, y, label=c["label"], color=c["color"], linewidth=1.8)
+
+# Formatting
+plt.xlabel("Cumulative Share of Districts (Ranked by Allocation)", fontsize=10)
+plt.ylabel("Cumulative Share of Resource / Doses Administered", fontsize=10)
+plt.xlim(0, 1.0)
+plt.ylim(0, 1.0)
+
+plt.grid(True, linestyle="-", alpha=0.5, color="#d3d3d3")
+plt.legend(frameon=True, facecolor="white", edgecolor="#e0e0e0", fontsize=9, loc="upper left")
+plt.tight_layout()
+
+plt.show()
