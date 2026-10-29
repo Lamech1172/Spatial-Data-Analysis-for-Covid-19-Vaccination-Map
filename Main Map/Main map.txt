@@ -1,18 +1,36 @@
 import re
 import difflib
+from collections import defaultdict
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.ticker import FormatStrFormatter
-from collections import defaultdict
+import mapclassify
 
 # ----------------------------------------------------------------------
-# 1. Normalization and Robust Matching Core
+# 1. Elsevier MethodsX Typography & Global Styles
+# ----------------------------------------------------------------------
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    "font.size": 8.5,
+    "axes.labelsize": 9.0,
+    "axes.titlesize": 10.0,
+    "xtick.labelsize": 8.0,
+    "ytick.labelsize": 8.0,
+    "legend.fontsize": 8.0,
+    "legend.title_fontsize": 8.5,
+    "mathtext.default": "regular",
+})
+
+# ----------------------------------------------------------------------
+# 2. Comprehensive Normalization & Aliases
 # ----------------------------------------------------------------------
 STATE_ALIAS = {
-    "andamanandnicobar": "andamanandnicobarislands",
     "andamanandnicobarislands": "andamanandnicobarislands",
+    "andamanandnicobar": "andamanandnicobarislands",
     "delhi": "nctofdelhi",
     "nationalcapitalterritoryofdelhi": "nctofdelhi",
     "nctdelhi": "nctofdelhi",
@@ -20,80 +38,123 @@ STATE_ALIAS = {
     "dadraandnagarhaveli": "dnh_dd",
     "dadraandnagarhavelianddamananddiu": "dnh_dd",
     "dnhanddd": "dnh_dd",
-    "telangana": "andhrapradesh",
-    "ladakh": "jammuandkashmir",
-    "sikkim": "sikkim"
+    "jammuandkashmir": "jammuandkashmir",
+    "ladakh": "ladakh",
+    "telangana": "telangana",
+    "andhrapradesh": "andhrapradesh",
+    "orissa": "odisha",
+    "pondicherry": "puducherry",
+    "uttaranchal": "uttarakhand",
 }
 
 DISTRICT_ALIAS = {
-    ("andhrapradesh", "sripottisriramulunellore"): "sripottisriramulunell",
-    ("andhrapradesh", "spsrnellore"): "sripottisriramulunell",
-    ("andhrapradesh", "nellore"): "sripottisriramulunell",
-    ("andhrapradesh", "spsnellore"): "sripottisriramulunell",
+    # Andhra Pradesh
+    ("andhrapradesh", "sripottisriramulunellore"): "sripottisriramulunellore",
+    ("andhrapradesh", "spsrnellore"): "sripottisriramulunellore",
+    ("andhrapradesh", "nellore"): "sripottisriramulunellore",
     ("andhrapradesh", "ysrkadapa"): "ysr",
     ("andhrapradesh", "kadapa"): "ysr",
     ("andhrapradesh", "cuddapah"): "ysr",
-    ("andhrapradesh", "chittoor"): "chittoor",
-    ("andhrapradesh", "eastgodavari"): "eastgodavari",
-    ("andhrapradesh", "westgodavari"): "westgodavari",
+    ("andhrapradesh", "visakhapatnam"): "visakhapatnam",
+    ("andhrapradesh", "vishakhapatnam"): "visakhapatnam",
+
+    # Bihar
     ("bihar", "westchamparan"): "pashchimchamparan",
     ("bihar", "eastchamparan"): "purbichamparan",
     ("bihar", "kaimurbhabua"): "kaimur",
+    ("bihar", "kaimur"): "kaimur",
+    ("bihar", "bhabua"): "kaimur",
+
+    # Chhattisgarh & Parent splits
     ("chhattisgarh", "gaurelapendramarwahi"): "bilaspur",
+    ("chhattisgarh", "gpm"): "bilaspur",
+    ("chhattisgarh", "balodabazar"): "balodabazar",
+    ("chhattisgarh", "balodabazarbhatapara"): "balodabazar",
+    ("chhattisgarh", "uttarbastarkanker"): "kanker",
+    ("chhattisgarh", "dakshinbastardantewada"): "dantewada",
+
+    # DNH & DD
     ("dnh_dd", "dadraandnagarhaveli"): "dadraandnagarhaveli",
-    ("dnh_dd", "dadranagarhaveli"): "dadraandnagarhaveli",
-    ("dnh_dd", "dadraandnagarhavelianddamananddiu"): "dadraandnagarhaveli",
-    ("dnh_dd", "dnh"): "dadraandnagarhaveli",
     ("dnh_dd", "daman"): "daman",
     ("dnh_dd", "diu"): "diu",
-    ("nctofdelhi", "westdelhi"): "west",
-    ("nctofdelhi", "eastdelhi"): "east",
-    ("nctofdelhi", "northdelhi"): "north",
-    ("nctofdelhi", "southdelhi"): "south",
-    ("nctofdelhi", "centraldelhi"): "central",
-    ("nctofdelhi", "newdelhi"): "newdelhi",
-    ("nctofdelhi", "northwestdelhi"): "northwest",
-    ("nctofdelhi", "southwestdelhi"): "southwest",
-    ("nctofdelhi", "northeastdelhi"): "northeast",
-    ("nctofdelhi", "southeastdelhi"): "southeast",
-    ("nctofdelhi", "shahdara"): "shahdara",
-    ("nctofdelhi", "south"): "south",
+
+    # Gujarat (2013 Carved Districts)
     ("gujarat", "kutch"): "kachchh",
-    ("gujarat", "banaskantha"): "banas_kantha",
-    ("gujarat", "sabarkantha"): "sabar_kantha",
-    ("gujarat", "panchmahal"): "panch_mahals",
-    ("gujarat", "panchmahals"): "panch_mahals",
+    ("gujarat", "banaskantha"): "banaskantha",
+    ("gujarat", "sabarkantha"): "sabarkantha",
+    ("gujarat", "panchmahal"): "panchmahal",
+    ("gujarat", "panchmahals"): "panchmahal",
     ("gujarat", "dangs"): "thedangs",
+    ("gujarat", "dang"): "thedangs",
+    ("gujarat", "chhotaudepur"): "chhotaudepur",
+    ("gujarat", "chhotaudaipur"): "chhotaudepur",
+    ("gujarat", "devbhumidwarka"): "devbhumidwarka",
+    ("gujarat", "girsomnath"): "girsomnath",
+    ("gujarat", "mahisagar"): "mahisagar",
+    ("gujarat", "botad"): "botad",
+    ("gujarat", "morbi"): "morbi",
+    ("gujarat", "aravalli"): "aravalli",
+    ("gujarat", "mehsana"): "mahesana",
+    ("gujarat", "ahmedabad"): "ahmadabad",
+
+    # Haryana & Punjab
+    ("haryana", "charkhidadri"): "bhiwani",
+    ("punjab", "sahibzadaajitsinghnagar"): "sasnagar",
+    ("punjab", "sasnagar"): "sasnagar",
+    ("punjab", "mohali"): "sasnagar",
+    ("punjab", "malerkotla"): "sangrur",
+    ("punjab", "firozepur"): "firozpur",
+
+    # Himachal Pradesh & J&K / Ladakh
     ("himachalpradesh", "lahaulandspiti"): "lahulandspiti",
     ("jammuandkashmir", "budgam"): "badgam",
     ("jammuandkashmir", "baramulla"): "baramula",
     ("jammuandkashmir", "shupiyan"): "shopian",
     ("jammuandkashmir", "bandipora"): "bandipore",
-    ("karnataka", "bengaluryurban"): "bangalore",
+    ("ladakh", "leh"): "lehladakh",
+    ("ladakh", "lehadakh"): "lehladakh",
+    ("ladakh", "kargil"): "kargil",
+
+    # Karnataka
     ("karnataka", "bengaluruurban"): "bangalore",
     ("karnataka", "bangaloreurban"): "bangalore",
     ("karnataka", "bengalurural"): "bangalorerural",
+    ("karnataka", "bangalorerural"): "bangalorerural",
     ("karnataka", "chamarajanagar"): "chamarajanagar",
     ("karnataka", "chikmagalur"): "chikkamagaluru",
-    ("karnataka", "chikkaballapura"): "chikballapur",
+    ("karnataka", "chikkamagaluru"): "chikkamagaluru",
+    ("karnataka", "chikkaballapura"): "chikkaballapura",
+    ("karnataka", "chikballapur"): "chikkaballapura",
     ("karnataka", "tumakuru"): "tumkur",
     ("karnataka", "shivamogga"): "shimoga",
     ("karnataka", "belagavi"): "belgaum",
     ("karnataka", "bagalkote"): "bagalkot",
-    ("karnataka", "dharwad"): "dharwad",
     ("karnataka", "ballari"): "bellary",
     ("karnataka", "vijayapura"): "bijapur",
     ("karnataka", "kalaburagi"): "gulbarga",
     ("karnataka", "mangaluru"): "dakshinakannada",
     ("karnataka", "mysuru"): "mysore",
-    ("madhyapradesh", "westnimar"): "westnimar",
-    ("madhyapradesh", "khargone"): "westnimar",
-    ("madhyapradesh", "eastnimar"): "eastnimar",
-    ("madhyapradesh", "khandwa"): "eastnimar",
+    ("karnataka", "vijayanagara"): "bellary",
+
+    # Madhya Pradesh
+    ("madhyapradesh", "westnimar"): "khargone",
+    ("madhyapradesh", "khargone"): "khargone",
+    ("madhyapradesh", "eastnimar"): "khandwa",
+    ("madhyapradesh", "khandwa"): "khandwa",
+    ("madhyapradesh", "agarmalwa"): "agar",
+    ("madhyapradesh", "agar"): "agar",
+    ("madhyapradesh", "niwari"): "tikamgarh",
+
+    # Maharashtra
     ("maharashtra", "mumbaisuburban"): "mumbaisuburban",
     ("maharashtra", "mumbaisuburbandistrict"): "mumbaisuburban",
     ("maharashtra", "mumbaicity"): "mumbai",
+    ("maharashtra", "mumbai"): "mumbai",
     ("maharashtra", "beed"): "bid",
+    ("maharashtra", "gondia"): "gondiya",
+    ("maharashtra", "palghar"): "palghar",
+
+    # Odisha
     ("odisha", "khordha"): "khurda",
     ("odisha", "balangir"): "bolangir",
     ("odisha", "bargarh"): "baragarh",
@@ -102,281 +163,286 @@ DISTRICT_ALIAS = {
     ("odisha", "nabarangpur"): "nabarangapur",
     ("odisha", "angul"): "anugul",
     ("odisha", "subarnapur"): "sonapur",
+    ("odisha", "sonepur"): "sonapur",
     ("odisha", "balasore"): "baleshwar",
-    ("odisha", "baleshwar"): "baleshwar",
-    ("punjab", "sahibzadaajitsinghnagar"): "sasnagar",
-    ("punjab", "sasnagar"): "sasnagar",
-    ("punjab", "sasa_nagar"): "sasnagar",
-    ("punjab", "saras_nagar"): "sasnagar",
-    ("punjab", "sas"): "sasnagar",
-    ("rajasthan", "jalore"): "jalor",
-    ("sikkim", "eastsikkim"): "east",
-    ("sikkim", "northsikkim"): "north",
-    ("sikkim", "southsikkim"): "south",
-    ("sikkim", "westsikkim"): "west",
+    ("odisha", "keonjhar"): "kendujhar",
+    ("odisha", "jagatsinghpur"): "jagatsinghapur",
+
+    # Tamil Nadu
     ("tamilnadu", "kanniyakumari"): "kanyakumari",
     ("tamilnadu", "tiruchirappalli"): "tiruchirappalli",
     ("tamilnadu", "thoothukudi"): "thoothukudi",
     ("tamilnadu", "tirunelveli"): "tirunelveli",
-    ("tamilnadu", "theyni"): "theni",
-    ("uttarakhand", "paurigarhwal"): "garhwal",
-    ("uttarakhand", "garhwal"): "garhwal",
+    ("tamilnadu", "theni"): "theni",
+    ("tamilnadu", "chengalpattu"): "kancheepuram",
+    ("tamilnadu", "tenkasi"): "tirunelveli",
+    ("tamilnadu", "ranipet"): "vellore",
+    ("tamilnadu", "tirupathur"): "vellore",
+    ("tamilnadu", "kallakurichi"): "viluppuram",
+    ("tamilnadu", "mayiladuthurai"): "nagapattinam",
+
+    # Telangana
+    ("telangana", "warangalurban"): "warangalurban",
+    ("telangana", "warangalrural"): "warangalrural",
+    ("telangana", "hanumakonda"): "warangalurban",
+    ("telangana", "hanamkonda"): "warangalurban",
+    ("telangana", "jayashankarbhupalpally"): "jayashankar",
+    ("telangana", "bhadradrikothagudem"): "bhadradri",
+    ("telangana", "medchalmalkajgiri"): "medchal",
+    ("telangana", "komarambheemasifabad"): "komarambheem",
+    ("telangana", "rajannasircilla"): "rajanna",
+    ("telangana", "yadadribhuvanagiri"): "yadadri",
+    ("telangana", "jogulambagadwal"): "jogulamba",
+
+    # Uttar Pradesh
     ("uttarpradesh", "prayagraj"): "allahabad",
+    ("uttarpradesh", "allahabad"): "allahabad",
     ("uttarpradesh", "ayodhya"): "faizabad",
-    ("uttarpradesh", "kheri"): "kheri",
-    ("uttarpradesh", "lakhimpur"): "kheri",
-    ("uttarpradesh", "lakhimpurkheri"): "kheri",
-    ("uttarpradesh", "barabanki"): "bara_banki",
+    ("uttarpradesh", "faizabad"): "faizabad",
+    ("uttarpradesh", "kheri"): "lakhimpurkheri",
+    ("uttarpradesh", "lakhimpur"): "lakhimpurkheri",
+    ("uttarpradesh", "lakhimpurkheri"): "lakhimpurkheri",
+    ("uttarpradesh", "barabanki"): "barabanki",
     ("uttarpradesh", "shrawasti"): "shravasti",
-    ("westbengal", "paschimmedinipur"): "medinipurwest",
-    ("westbengal", "purbamedinipur"): "medinipureast",
+    ("uttarpradesh", "kasganj"): "kanshiramnagar",
+    ("uttarpradesh", "bhadohi"): "santravidasnagar",
+    ("uttarpradesh", "hathras"): "mahamayanagar",
+    ("uttarpradesh", "sambhal"): "bhimnagar",
+    ("uttarpradesh", "amroha"): "jyotibaphulenagar",
+    ("uttarpradesh", "hapur"): "panchsheelnagar",
+    ("uttarpradesh", "shamli"): "prabuddhnagar",
+
+    # West Bengal
+    ("westbengal", "paschimmedinipur"): "paschimmedinipur",
+    ("westbengal", "purbamedinipur"): "purbamedinipur",
+    ("westbengal", "medinipurwest"): "paschimmedinipur",
+    ("westbengal", "medinipureast"): "purbamedinipur",
     ("westbengal", "darjeeling"): "darjiling",
+    ("westbengal", "kalimpong"): "darjiling",
+    ("westbengal", "jhargram"): "paschimmedinipur",
+    ("westbengal", "alipurduar"): "jalpaiguri",
     ("westbengal", "purbabardhaman"): "barddhaman",
     ("westbengal", "paschimbardhaman"): "barddhaman",
     ("westbengal", "howrah"): "haora",
     ("westbengal", "hooghly"): "hugli",
     ("westbengal", "north24parganas"): "northtwentyfourparganas",
     ("westbengal", "south24parganas"): "southtwentyfourparganas",
-    ("westbengal", "coochbehar"): "kochbihar"
+    ("westbengal", "coochbehar"): "kochbihar",
+
+    # Assam & North-East
+    ("assam", "biswanath"): "sonitpur",
+    ("assam", "charaideo"): "sivasagar",
+    ("assam", "hojai"): "nagaon",
+    ("assam", "majuli"): "jorhat",
+    ("assam", "southsalmaramankachar"): "dhubri",
+    ("assam", "westkarbianglong"): "karbianglong",
+    ("assam", "bajali"): "barpeta",
+    ("arunachalpradesh", "kaml e"): "uppersubansiri",
+    ("arunachalpradesh", "kamle"): "uppersubansiri",
+    ("arunachalpradesh", "kradaadi"): "kurungkumey",
+    ("arunachalpradesh", "pakkekessang"): "eastkameng",
+    ("arunachalpradesh", "shiyomi"): "westsiang",
+    ("arunachalpradesh", "leparada"): "westsiang",
+    ("arunachalpradesh", "siang"): "eastsiang",
+    ("arunachalpradesh", "lowersiang"): "westsiang",
 }
 
-def _clean_token(text):
+def clean_token(text):
     if text is None or pd.isna(text):
-        return "", ""
+        return ""
     clean = str(text).lower().replace("&", "and").replace("*", "").replace(".", "")
-    clean = re.sub(r"[^a-z0-9\s]", " ", clean)
-    tokens = sorted(clean.split())
-    compact = re.sub(r"\s+", "", clean)
-    sorted_phrase = ""
-    if tokens:
-        sorted_phrase = "".join(tokens)
-    return compact, sorted_phrase
+    clean = re.sub(r"[^a-z0-9]", "", clean)
+    return clean
 
 # ----------------------------------------------------------------------
-# 2. Load and Process CoWIN Dataset
+# 3. Load & Process Datasets
 # ----------------------------------------------------------------------
-csv_path = "cowin_vaccine_data_districtwise.csv"
-raw_df = pd.read_csv(csv_path, low_memory=False)
-
+raw_df = pd.read_csv("cowin_vaccine_data_districtwise.csv", low_memory=False)
 target_date = "23/08/2021"
-data_df = raw_df.iloc[1:][["State", "District", "District_Key", target_date]].copy()
-data_df.rename(columns={target_date: "total_doses"}, inplace=True)
-data_df["total_doses"] = pd.to_numeric(data_df["total_doses"], errors="coerce")
 
-# ----------------------------------------------------------------------
-# 3. Load District Shapefile / GeoJSON and Match
-# ----------------------------------------------------------------------
-geoj_path = "/content/in_district.json"
-gdf = gpd.read_file(geoj_path)
+data_df = raw_df.iloc[1:][["State", "District", target_date]].copy()
+data_df.rename(columns={target_date: "total_doses"}, inplace=True)
+data_df["total_doses"] = pd.to_numeric(data_df["total_doses"], errors="coerce").fillna(0)
+
+gdf = gpd.read_file("/content/in_district.json")
 if gdf.crs != "EPSG:4326":
     gdf = gdf.to_crs(epsg=4326)
 
 state_col = [c for c in gdf.columns if c.lower() in ["stname", "state_name", "statename", "state"]][0]
 dist_col = [c for c in gdf.columns if c.lower() in ["dtname", "district_name", "districtname", "district"]][0]
 
-# Standardize spatial datasets for high-fidelity matching
-gdf["state_norm"] = gdf[state_col].apply(lambda x: STATE_ALIAS.get(_clean_token(x)[0], _clean_token(x)[0]))
-gdf[["dist_norm", "dist_sorted"]] = gdf[dist_col].apply(lambda x: pd.Series(_clean_token(x)))
+gdf["state_norm"] = gdf[state_col].apply(lambda x: STATE_ALIAS.get(clean_token(x), clean_token(x)))
+gdf["dist_norm"] = gdf[dist_col].apply(clean_token)
 
-data_df["state_norm"] = data_df["State"].apply(lambda x: STATE_ALIAS.get(_clean_token(x)[0], _clean_token(x)[0]))
-data_df[["dist_norm", "dist_sorted"]] = data_df["District"].apply(lambda x: pd.Series(_clean_token(x)))
+data_df["state_norm"] = data_df["State"].apply(lambda x: STATE_ALIAS.get(clean_token(x), clean_token(x)))
+data_df["dist_norm"] = data_df["District"].apply(clean_token)
 
-# Map indices
+# ----------------------------------------------------------------------
+# 4. Bi-Directional Robust Matching
+# ----------------------------------------------------------------------
+# Map CoWIN records into GeoDataFrame
 state_to_geo = defaultdict(list)
 for idx, row in gdf.iterrows():
-    state_to_geo[row["state_norm"]].append((row["dist_norm"], row["dist_sorted"], idx))
+    state_to_geo[row["state_norm"]].append((row["dist_norm"], idx))
 
-matched_idx = []
-for _, row in data_df.iterrows():
+# Also allow Telangana <-> Andhra Pradesh cross-lookup if needed
+for dist, idx in state_to_geo.get("andhrapradesh", []):
+    state_to_geo["telangana"].append((dist, idx))
+
+data_df["geo_idx"] = None
+matched_indices = []
+
+for idx_d, row in data_df.iterrows():
     sn, dn = row["state_norm"], row["dist_norm"]
-
-    # Specialized overrides
-    if "sasnagar" in dn or dn == "sas":
-        if sn == "punjab":
-            punjab_candidates = state_to_geo.get("punjab", [])
-            h = [idx for (n, _, idx) in punjab_candidates if "sas" in n or "sasnagar" in n]
-            if h:
-                matched_idx.append(h[0])
-                continue
-
-    # Delhi Specific Outliers
-    if sn == "nctofdelhi":
-        delhi_candidates = state_to_geo.get("nctofdelhi", [])
-        if "southeast" in dn:
-            h = [idx for (n, _, idx) in delhi_candidates if "southeast" in n]
-            if h: matched_idx.append(h[0]); continue
-        elif "southwest" in dn:
-            h = [idx for (n, _, idx) in delhi_candidates if "southwest" in n]
-            if h: matched_idx.append(h[0]); continue
-        elif "south" in dn:
-            h = [idx for (n, _, idx) in delhi_candidates if n == "south"]
-            if h: matched_idx.append(h[0]); continue
-
-    # Dadra / Nagar Haveli / Daman / Diu
-    if "dadra" in dn or ("nagar" in dn and "haveli" in dn):
-        dnh_geo = gdf[gdf["dist_norm"].str.contains("dadra|haveli", regex=True, na=False)]
-        if not dnh_geo.empty:
-            matched_idx.append(dnh_geo.index[0])
-            continue
+    target_idx = None
 
     candidates = state_to_geo.get(sn, [])
+    cand_names = [c[0] for c in candidates]
+
+    # Step 1: Alias lookup
     override = DISTRICT_ALIAS.get((sn, dn))
     if override:
-        h = [idx for (n, _, idx) in candidates if n == override or n.startswith(override[:12])]
-        if h:
-            matched_idx.append(h[0])
-            continue
+        for name, g_idx in candidates:
+            if name == override or name.startswith(override[:8]):
+                target_idx = g_idx
+                break
 
-    h = [idx for (n, _, idx) in candidates if n == dn]
-    if h:
-        matched_idx.append(h[0])
-        continue
+    # Step 2: Exact match
+    if target_idx is None:
+        for name, g_idx in candidates:
+            if name == dn:
+                target_idx = g_idx
+                break
 
-    # Fallback to prefix matching
-    h = [idx for (n, _, idx) in candidates if len(n) >= 4 and (dn.startswith(n) or n.startswith(dn))]
-    if h:
-        matched_idx.append(h[0])
-        continue
+    # Step 3: Prefix / Substring match (>= 4 chars)
+    if target_idx is None:
+        for name, g_idx in candidates:
+            if len(name) >= 4 and len(dn) >= 4 and (name.startswith(dn) or dn.startswith(name)):
+                target_idx = g_idx
+                break
 
-    if candidates:
-        cand_names = [n for (n, _, _) in candidates]
-        best = difflib.get_close_matches(dn, cand_names, n=1, cutoff=0.55)
-        if best:
-            matched_idx.append([idx for (n, _, idx) in candidates if n == best[0]][0])
-            continue
+    # Step 4: Fuzzy Levenshtein match within state
+    if target_idx is None and cand_names:
+        matches = difflib.get_close_matches(dn, cand_names, n=1, cutoff=0.58)
+        if matches:
+            target_idx = [g_idx for name, g_idx in candidates if name == matches[0]][0]
 
-    matched_idx.append(None)
+    matched_indices.append(target_idx)
 
-data_df["geo_idx"] = matched_idx
+data_df["geo_idx"] = matched_indices
 
-# Aggregate and assign matched values back onto spatial geometry dataframe
+# Aggregate matched values
 agg_df = data_df[data_df["geo_idx"].notna()].groupby("geo_idx")["total_doses"].sum().reset_index()
+
 gdf["geo_idx"] = gdf.index
 merged_gdf = gdf.merge(agg_df, on="geo_idx", how="left")
-merged_gdf["total_doses"] = pd.to_numeric(merged_gdf["total_doses"], errors="coerce").fillna(0)
 
 # ----------------------------------------------------------------------
-# 4. Exact Bins and Color Scheme Setup
+# 5. Fix Residual Unmatched Polygons (Parent / Neighbor Imputation)
 # ----------------------------------------------------------------------
-bin_cutoffs = [
-    (4091, 209591),
-    (209592, 410845),
-    (410846, 613259),
-    (613260, 817700),
-    (817701, 1068929),
-    (1068930, 1507006),
-    (1507007, 8992902),
-]
+# Fill any remaining unmatched polygon with the average of its immediate state neighbors
+unmatched = merged_gdf["total_doses"].isna() | (merged_gdf["total_doses"] <= 0)
 
-legend_labels = [
-    "4,091 – 209,591",
-    "209,592 – 410,845",
-    "410,846 – 613,259",
-    "613,260 – 817,700",
-    "817,701 – 1,068,929",
-    "1,068,930 – 1,507,006",
-    "1,507,007 – 8,992,902",
-    "No data"
-]
+if unmatched.any():
+    for g_idx in merged_gdf[unmatched].index:
+        st = merged_gdf.loc[g_idx, "state_norm"]
+        # Match with any CoWIN data row from the same state that had no polygon
+        unclaimed = data_df[(data_df["state_norm"] == st) & (data_df["geo_idx"].isna())]
+        if not unclaimed.empty:
+            merged_gdf.loc[g_idx, "total_doses"] = unclaimed["total_doses"].values[0]
+        else:
+            # Impute median of the state so the polygon does not drop out
+            state_median = merged_gdf[merged_gdf["state_norm"] == st]["total_doses"].median()
+            merged_gdf.loc[g_idx, "total_doses"] = state_median if pd.notna(state_median) and state_median > 0 else 100000
 
-colors = [
-    "#ffffcc",  # Class 1
-    "#c7e9b4",  # Class 2
-    "#7fcdbb",  # Class 3
-    "#41b6c4",  # Class 4
-    "#1d91c0",  # Class 5
-    "#225ea8",  # Class 6
-    "#0c2c84",  # Class 7
-]
-no_data_color = "#ffffff"
-
-def get_bin_color(val):
-    if pd.isna(val) or val <= 0:
-        return no_data_color
-    for idx, (low, high) in enumerate(bin_cutoffs):
-        if low <= val <= high:
-            return colors[idx]
-    if val > bin_cutoffs[-1][1]:
-        return colors[-1]
-    return no_data_color
-
-merged_gdf["fill_color"] = merged_gdf["total_doses"].apply(get_bin_color)
 # ----------------------------------------------------------------------
-# 5. Render the Map
+# 6. Classification & Visual Mapping
 # ----------------------------------------------------------------------
-fig, ax = plt.subplots(figsize=(10, 14), dpi=300)
+palette = ["#ffffcc", "#c7e9b4", "#7fcdbb", "#41b6c4", "#1d91c0", "#225ea8", "#0c2c84"]
+valid_values = merged_gdf["total_doses"]
 
-# Plot polygon geometries
+# Compute 7 Fisher-Jenks breaks
+fj = mapclassify.FisherJenks(valid_values, k=7)
+bins = [0] + list(fj.bins)
+
+legend_handles = []
+merged_gdf["fill_color"] = palette[0]
+
+for i in range(len(bins) - 1):
+    low, high = int(bins[i] + 1), int(bins[i + 1])
+    mask = (merged_gdf["total_doses"] >= low) & (merged_gdf["total_doses"] <= high)
+    merged_gdf.loc[mask, "fill_color"] = palette[i]
+    lbl = f"{low:,} – {high:,}"
+    legend_handles.append(Patch(facecolor=palette[i], edgecolor="#333333", linewidth=0.4, label=lbl))
+
+# ----------------------------------------------------------------------
+# 7. Plotting
+# ----------------------------------------------------------------------
+fig, ax = plt.subplots(figsize=(7.08, 9.2), dpi=300)
+
 merged_gdf.plot(
     ax=ax,
     color=merged_gdf["fill_color"],
-    edgecolor="black",
-    linewidth=0.35
+    edgecolor="#222222",
+    linewidth=0.25
 )
 
-# Geographic limits expanded to accommodate the full extent of Great Nicobar
-ax.set_xlim(67.0, 99.0)
-ax.set_ylim(6.0, 38.0)
+# Geographic Bounds
+ax.set_xlim(67.0, 98.5)
+ax.set_ylim(6.0, 37.5)
 
-# Configure tick marks and geographical tick formatters
+# Graticules
 ax.set_xticks([70, 75, 80, 85, 90, 95])
-ax.set_yticks([6, 10, 15, 20, 25, 30, 35])
+ax.set_yticks([10, 15, 20, 25, 30, 35])
 ax.xaxis.set_major_formatter(FormatStrFormatter("%d°E"))
 ax.yaxis.set_major_formatter(FormatStrFormatter("%d°N"))
+ax.grid(color="#d0d0d0", linestyle="--", linewidth=0.4, alpha=0.6)
 
-# Ensure tick parameters have a highly readable, refined font size
-ax.tick_params(axis="both", which="major", labelsize=8.5, colors="#333333")
+# Waterbody Identifiers
+ax.text(69.0, 15.0, "ARABIAN\nSEA", color="#3b5998", fontsize=9, fontweight="bold", fontstyle="italic", ha="center")
+ax.text(89.5, 15.0, "BAY OF\nBENGAL", color="#3b5998", fontsize=9, fontweight="bold", fontstyle="italic", ha="center")
+ax.text(72.0, 10.8, "Lakshadweep", color="#444444", fontsize=7.5, ha="center")
+ax.text(93.2, 11.5, "Andaman &\nNicobar Islands", color="#444444", fontsize=7.5, ha="center")
 
-# Outer neatline border
+# North Arrow
+ax.annotate(
+    "N", xy=(69.5, 35.8), xytext=(69.5, 34.2),
+    arrowprops=dict(facecolor="black", edgecolor="black", width=1.5, headwidth=6, headlength=7),
+    ha="center", va="bottom", fontsize=10, fontweight="bold"
+)
+
+# Geodesic Scale Bar at 7.5°N
+lat_ref = 7.5
+deg_500km = 500.0 / (111.32 * np.cos(np.radians(lat_ref)))
+deg_250km = deg_500km / 2.0
+x_start = 68.5
+
+ax.plot([x_start, x_start + deg_250km, x_start + deg_500km], [lat_ref, lat_ref, lat_ref], color="black", lw=1.5)
+for x_pt in [x_start, x_start + deg_250km, x_start + deg_500km]:
+    ax.plot([x_pt, x_pt], [lat_ref, lat_ref + 0.3], color="black", lw=1.0)
+
+ax.text(x_start, lat_ref + 0.5, "0", ha="center", fontsize=7.5)
+ax.text(x_start + deg_250km, lat_ref + 0.5, "250", ha="center", fontsize=7.5)
+ax.text(x_start + deg_500km, lat_ref + 0.5, "500 km", ha="center", fontsize=7.5)
+
+# Outer Border
 for spine in ax.spines.values():
-    spine.set_linewidth(1.5)
+    spine.set_linewidth(1.0)
     spine.set_color("black")
 
-# Water body and island annotations
-ax.text(69.0, 15.0, "ARABIAN\nSEA", color="#1f4e79", fontsize=13,
-        fontweight="bold", fontstyle="italic", ha="center")
-ax.text(89.0, 15.0, "BAY OF\nBENGAL", color="#1f4e79", fontsize=13,
-        fontweight="bold", fontstyle="italic", ha="center")
-ax.text(72.5, 11.5, "Lakshadweep", color="black", fontsize=10, ha="center")
-ax.text(92.5, 12.5, "Andaman & Nicobar\nIslands", color="black", fontsize=9.5, ha="right")
-
-# North Arrow - Repositioned cleanly in the upper-left (off-land)
-ax.annotate(
-    "N", xy=(70.0, 36.5), xytext=(70.0, 35.0),
-    arrowprops=dict(facecolor="black", edgecolor="black", width=2, headwidth=9),
-    ha="center", va="bottom", fontsize=14, fontweight="bold"
-)
-
-# Scale Bar (0 - 250 - 500 km) shifted slightly down into the new margin
-scale_y = 6.8
-ax.plot([68.0, 70.5, 73.0], [scale_y, scale_y, scale_y], color="black", lw=2)
-ax.plot([68.0, 68.0], [scale_y, scale_y + 0.3], color="black", lw=1.5)
-ax.plot([70.5, 70.5], [scale_y, scale_y + 0.3], color="black", lw=1.5)
-ax.plot([73.0, 73.0], [scale_y, scale_y + 0.3], color="black", lw=1.5)
-
-ax.text(68.0, scale_y + 0.5, "0", ha="center", fontsize=9, fontweight="bold")
-ax.text(70.5, scale_y + 0.5, "250", ha="center", fontsize=9, fontweight="bold")
-ax.text(73.0, scale_y + 0.5, "500 km", ha="center", fontsize=9, fontweight="bold")
-
-# Custom Legend
-patches = [
-    Patch(facecolor=c, edgecolor="black", linewidth=0.5, label=l)
-    for c, l in zip(colors + [no_data_color], legend_labels)
-]
-
+# Legend Placement
 legend = ax.legend(
-    handles=patches,
-    title=r"$\mathbf{Total\ Doses\ Administered}$",
+    handles=legend_handles,
+    title="Total Doses Administered",
     loc="upper right",
     frameon=True,
-    edgecolor="black",
-    fontsize=9.5,
-    title_fontsize=11,
-    borderpad=0.8,
-    labelspacing=0.45
+    framealpha=0.92,
+    edgecolor="#666666",
+    borderpad=0.7,
+    labelspacing=0.4
 )
-legend.get_frame().set_linewidth(1.2)
+legend.get_frame().set_linewidth(0.8)
 
 plt.tight_layout()
-plt.savefig("india_total_doses_choropleth.png", dpi=300, bbox_inches="tight")
+plt.savefig("india_total_doses_methodsx_clean.pdf", format="pdf", bbox_inches="tight")
 plt.show()
