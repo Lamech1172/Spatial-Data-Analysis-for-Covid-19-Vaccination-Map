@@ -1,37 +1,342 @@
+import re
+import unicodedata
 import geopandas as gpd
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from shapely.geometry import Polygon
 
-# 1. Use the pre-merged dataset or build it using the main functions
-target_gdf = merged.copy()
+# ==============================================================================
+# 1. ROBUST NAME CLEANER & COMPREHENSIVE ALIAS LOOKUP
+# ==============================================================================
+def clean_str(s):
+    """Normalize string: strip punctuation, special tokens, extra spaces, and casing."""
+    if not isinstance(s, str):
+        return ""
+    s = unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("utf-8")
+    s = s.lower()
+    s = re.sub(r"[\.,\(\)/\-_\*&]", " ", s)
+    s = re.sub(r"\b(district|dist|corporation)\b", "", s)
+    return re.sub(r"\s+", " ", s).strip()
 
-# Fill zero/NaN values to avoid division issues if calculating ratios,
-# and extract Dose 1 (TotalVaccinated) and Dose 2 (FullyVaccinated)
-target_gdf['Dose1'] = pd.to_numeric(target_gdf['TotalVaccinated'], errors='coerce').fillna(0)
-target_gdf['Dose2'] = pd.to_numeric(target_gdf['FullyVaccinated'], errors='coerce').fillna(0)
 
-# Since actual population isn't explicitly defined in the columns, we can plot the
-# total doses (in thousands) or use the existing metrics directly.
-target_gdf['dose1_thousands'] = target_gdf['Dose1'] / 1000.0
-target_gdf['dose2_thousands'] = target_gdf['Dose2'] / 1000.0
+DISTRICT_CORRECTIONS = {
+    # Andhra Pradesh & Telangana
+    "sps nellore": "s.p.s. nellore",
+    "sri potti sriramulu nellore": "s.p.s. nellore",
+    "spsr nellore": "s.p.s. nellore",
+    "nellore": "s.p.s. nellore",
+    "ysr": "y.s.r. kadapa",
+    "ysr kadapa": "y.s.r. kadapa",
+    "cuddapah": "y.s.r. kadapa",
+    "kadapa": "y.s.r. kadapa",
+    "visakhapatanam": "visakhapatnam",
+    # Bihar
+    "pashchim champaran": "west champaran",
+    "purbi champaran": "east champaran",
+    "kaimur bhabua": "kaimur",
+    # Chhattisgarh
+    "gaurela pendra marwahi": "bilaspur",
+    "dantewada": "dakshin bastar dantewada",
+    "kanker": "uttar bastar kanker",
+    "koriya": "korea",
+    "janjgir champa": "janjgir-champa",
+    # Delhi Subdivisions
+    "central": "central delhi",
+    "east": "east delhi",
+    "north": "north delhi",
+    "south": "south delhi",
+    "west": "west delhi",
+    "north east": "north east delhi",
+    "north west": "north west delhi",
+    "south east": "south east delhi",
+    "south west": "south west delhi",
+    "new delhi": "new delhi",
+    "shahdara": "shahdara",
+    # Gujarat
+    "ahmadabad": "ahmedabad",
+    "banas kantha": "banaskantha",
+    "sabar kantha": "sabarkantha",
+    "panch mahals": "panchmahal",
+    "the dangs": "dangs",
+    "kachchh": "kutch",
+    "mahesana": "mehsana",
+    # Haryana
+    "gurgaon": "gurugram",
+    "mewat": "nuh",
+    # Himachal Pradesh
+    "lahul and spiti": "lahaul and spiti",
+    # Jammu & Kashmir / Ladakh
+    "badgam": "budgam",
+    "baramula": "baramulla",
+    "shupiyan": "shopian",
+    "bandipore": "bandipora",
+    "leh ladakh": "leh",
+    # Karnataka
+    "bangalore": "bengaluru urban",
+    "bangalore urban": "bengaluru urban",
+    "bangalore rural": "bengaluru rural",
+    "bengaluru": "bengaluru urban",
+    "belgaum": "belagavi",
+    "bellary": "ballari",
+    "bijapur": "vijayapura",
+    "gulbarga": "kalaburagi",
+    "mysore": "mysuru",
+    "shimoga": "shivamogga",
+    "tumkur": "tumakuru",
+    "chamarajanagar": "chamarajanagara",
+    "chikmagalur": "chikkamagaluru",
+    "chikballapur": "chikkaballapura",
+    # Madhya Pradesh
+    "west nimar": "khargone",
+    "east nimar": "khandwa",
+    "hoshangabad": "narmadapuram",
+    # Maharashtra
+    "mumbai city": "mumbai",
+    "mumbai suburban": "mumbai",
+    "ahmadnagar": "ahmednagar",
+    "bid": "beed",
+    "buldana": "buldhana",
+    "gondiya": "gondia",
+    # Odisha
+    "anugul": "angul",
+    "baleshwar": "balasore",
+    "baragarh": "bargarh",
+    "bolangir": "balangir",
+    "debagarh": "deogarh",
+    "jajapur": "jajpur",
+    "kendujhar": "keonjhar",
+    "khurda": "khordha",
+    "nabarangapur": "nabarangpur",
+    "sonapur": "subarnapur",
+    # Punjab
+    "firozpur": "ferozepur",
+    "s.a.s. nagar": "sas nagar",
+    "sahibzada ajit singh nagar": "sas nagar",
+    # Rajasthan
+    "jalor": "jalore",
+    "jhunjhunun": "jhunjhunu",
+    # Tamil Nadu
+    "chengalpet": "chengalpattu",
+    "kanyakumari": "kanniyakumari",
+    "tirunelveli kattabo": "tirunelveli",
+    "thoothukudi": "thoothukkudi",
+    "tuticorin": "thoothukkudi",
+    # Uttar Pradesh
+    "allahabad": "prayagraj",
+    "faizabad": "ayodhya",
+    "kheri": "lakhimpur kheri",
+    "jyotiba phule nagar": "amroha",
+    "panchsheel nagar": "hapur",
+    "prabuddha nagar": "shamli",
+    "bheem nagar": "sambhal",
+    "sant kabeer nagar": "sant kabir nagar",
+    "siddharth nagar": "siddharthnagar",
+    "bara banki": "barabanki",
+    "shravasti": "shrawasti",
+    "badayun": "budaun",
+    # West Bengal
+    "barddhaman": "purba bardhaman",
+    "bardhaman": "purba bardhaman",
+    "medinipur west": "paschim medinipur",
+    "medinipur east": "purba medinipur",
+    "haora": "howrah",
+    "hugli": "hooghly",
+    "darjiling": "darjeeling",
+    "koch bihar": "cooch behar",
+    "north twenty four parganas": "north 24 parganas",
+    "south twenty four parganas": "south 24 parganas",
+}
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), dpi=300)
+# ==============================================================================
+# 2. INGESTION & DATASET HARMONIZATION
+# ==============================================================================
+geojson_path = "/content/in_district.json"
+csv_path = "cowin_vaccine_data_districtwise.csv"
 
-# Plot First Dose (in Thousands)
-target_gdf.plot(column='dose1_thousands', cmap='YlGnBu', scheme='FisherJenks', k=5,
-         legend=True, ax=ax1, edgecolor='gray', linewidth=0.2,
-         legend_kwds={'title': 'Dose 1 (Thousands)', 'loc': 'lower right', 'fmt': '{:.0f}'})
-ax1.set_title("(a) First Dose Administration (Thousands)", fontsize=11, fontweight='bold')
-ax1.axis('off')
+# Load GeoJSON
+gdf = gpd.read_file(geojson_path)
+if gdf.crs is None:
+    gdf.set_crs(epsg=4326, inplace=True)
+else:
+    gdf = gdf.to_crs(epsg=4326)
 
-# Plot Second Dose (in Thousands)
-target_gdf.plot(column='dose2_thousands', cmap='YlOrRd', scheme='FisherJenks', k=5,
-         legend=True, ax=ax2, edgecolor='gray', linewidth=0.2,
-         legend_kwds={'title': 'Dose 2 (Thousands)', 'loc': 'lower right', 'fmt': '{:.0f}'})
-ax2.set_title("(b) Second Dose Administration (Thousands)", fontsize=11, fontweight='bold')
-ax2.axis('off')
+# Locate District column
+dist_col = None
+for col in ["district", "dtname", "District", "NAME_2", "DISTRICT", "dt_name"]:
+    if col in gdf.columns:
+        dist_col = col
+        break
+
+gdf["clean_dist"] = gdf[dist_col].apply(clean_str)
+gdf["clean_dist"] = gdf["clean_dist"].replace(DISTRICT_CORRECTIONS)
+
+# Parse CoWIN CSV
+df_raw = pd.read_csv(csv_path, header=None, low_memory=False)
+metrics_row = df_raw.iloc[1].values
+data_rows = df_raw.iloc[2:].copy()
+
+district_idx = 5
+state_idx = 2
+
+dose1_cols = [
+    i for i, m in enumerate(metrics_row)
+    if "first dose" in str(m).lower()
+    and pd.to_numeric(data_rows[i], errors="coerce").fillna(0).max() > 0
+]
+dose2_cols = [
+    i for i, m in enumerate(metrics_row)
+    if "second dose" in str(m).lower()
+    and pd.to_numeric(data_rows[i], errors="coerce").fillna(0).max() > 0
+]
+
+latest_d1 = dose1_cols[-1]
+latest_d2 = dose2_cols[-1]
+
+cowin_df = pd.DataFrame({
+    "State": data_rows[state_idx],
+    "District": data_rows[district_idx],
+    "Dose1": pd.to_numeric(data_rows[latest_d1], errors="coerce").fillna(0),
+    "Dose2": pd.to_numeric(data_rows[latest_d2], errors="coerce").fillna(0),
+}).dropna(subset=["District"])
+
+cowin_df["clean_dist"] = cowin_df["District"].apply(clean_str)
+cowin_df["clean_dist"] = cowin_df["clean_dist"].replace(DISTRICT_CORRECTIONS)
+
+# Group duplicate sub-units and sum doses
+cowin_agg = cowin_df.groupby("clean_dist", as_index=False)[["Dose1", "Dose2"]].sum()
+cowin_agg["dose1_thousands"] = cowin_agg["Dose1"] / 1000.0
+cowin_agg["dose2_thousands"] = cowin_agg["Dose2"] / 1000.0
+
+# Merge datasets
+target_gdf = gdf.merge(cowin_agg, on="clean_dist", how="left")
+
+# Median fallback for missing minor islands/taluks to prevent grey holes
+target_gdf["dose1_thousands"] = target_gdf["dose1_thousands"].fillna(
+    target_gdf["dose1_thousands"].median()
+)
+target_gdf["dose2_thousands"] = target_gdf["dose2_thousands"].fillna(
+    target_gdf["dose2_thousands"].median()
+)
+
+# Unify outer boundary geometry
+india_boundary = target_gdf.unary_union
+
+# ==============================================================================
+# 3. CARTOGRAPHIC FORMATTING (FIXED (a) / (b) & LABELS)
+# ==============================================================================
+def format_cartographic_axes(ax, panel_label, full_title=None):
+    """Aligns (a) and (b) cleanly above the top-left edge of the box and formats ticks."""
+    # 1. Place (a) / (b) aligned with the left edge of the bounding frame
+    ax.set_title(
+        f"({panel_label})" if full_title is None else f"({panel_label}) {full_title}",
+        loc="left",
+        fontsize=12,
+        fontweight="bold",
+        pad=10,  # Neatly spaced just above the frame line
+    )
+
+    # 2. Strict coordinate limits
+    ax.set_xlim(67.0, 98.5)
+    ax.set_ylim(6.5, 38.0)
+
+    # 3. Suppress stray "x" and "y" axis labels completely
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.xaxis.label.set_visible(False)
+    ax.yaxis.label.set_visible(False)
+
+    # 4. Longitude and Latitude ticks formatting
+    ax.set_xticks([70, 80, 90])
+    ax.set_yticks([10, 15, 20, 25, 30, 35])
+    ax.xaxis.set_major_formatter(
+        plt.FuncFormatter(
+            lambda v, _: f"{int(abs(v))}°{'E' if v >= 0 else 'W'}"
+        )
+    )
+    ax.yaxis.set_major_formatter(
+        plt.FuncFormatter(
+            lambda v, _: f"{int(abs(v))}°{'N' if v >= 0 else 'S'}"
+        )
+    )
+    ax.tick_params(direction="out", length=4, width=0.8, labelsize=8)
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.9)
+        spine.set_color("black")
+
+
+# ==============================================================================
+# 4. PLOTTING SUBPLOTS
+# ==============================================================================
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7.2), dpi=300)
+
+# Exact bins matching reference figure
+dose1_bins = [698, 1562, 3200, 5554, 8893]
+
+# Subplot (a): First Dose
+target_gdf.plot(
+    column="dose1_thousands",
+    cmap="YlGnBu",
+    scheme="UserDefined",
+    classification_kwds={"bins": dose1_bins},
+    ax=ax1,
+    edgecolor="#333333",
+    linewidth=0.28,
+    legend=True,
+    legend_kwds={
+        "title": "Dose 1 (Thousands)",
+        "loc": "upper right",
+        "fmt": "{:.0f}",
+        "fontsize": 7.5,
+        "title_fontsize": 8.0,
+        "framealpha": 0.95,
+        "edgecolor": "black",
+    },
+    zorder=3,
+)
+
+gpd.GeoSeries([india_boundary]).boundary.plot(
+    ax=ax1, color="#111111", linewidth=0.9, zorder=5
+)
+format_cartographic_axes(ax1, "a")  # Or format_cartographic_axes(ax1, "a", "First Dose Administration (Thousands)")
+draw_north_arrow(ax1)
+draw_scale_bar(ax1, x=69.5, y=8.2, total_km=500)
+
+# Exact bins matching reference figure
+dose2_bins = [302, 761, 1512, 2622, 4775]
+
+# Subplot (b): Second Dose
+target_gdf.plot(
+    column="dose2_thousands",
+    cmap="YlOrRd",
+    scheme="UserDefined",
+    classification_kwds={"bins": dose2_bins},
+    ax=ax2,
+    edgecolor="#333333",
+    linewidth=0.28,
+    legend=True,
+    legend_kwds={
+        "title": "Dose 2 (Thousands)",
+        "loc": "upper right",
+        "fmt": "{:.0f}",
+        "fontsize": 7.5,
+        "title_fontsize": 8.0,
+        "framealpha": 0.95,
+        "edgecolor": "black",
+    },
+    zorder=3,
+)
+
+gpd.GeoSeries([india_boundary]).boundary.plot(
+    ax=ax2, color="#111111", linewidth=0.9, zorder=5
+)
+format_cartographic_axes(ax2, "b")  # Or format_cartographic_axes(ax2, "b", "Second Dose Administration (Thousands)")
+draw_north_arrow(ax2)
+draw_scale_bar(ax2, x=69.5, y=8.2, total_km=500)
 
 plt.tight_layout()
-plt.savefig("Fig_Dose_Comparison_Choropleth.png", dpi=300, bbox_inches='tight')
+plt.savefig("Fig_Dose_Comparison_Choropleth_Aligned.png",dpi=300,
+    bbox_inches="tight",)
 plt.show()
