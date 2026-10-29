@@ -1,53 +1,77 @@
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-import pandas as pd
+import matplotlib.ticker as mticker
 import numpy as np
+import pandas as pd
 
-# Helper to add north arrow if not already defined
-if 'add_north_arrow' not in globals():
-    def add_north_arrow(ax):
-        ax.annotate('▲\nN', xy=(0.05, 0.9), xycoords='axes fraction',
-                    fontsize=14, fontweight='bold', ha='center')
 
-# Helper to add scale bar if not already defined
-if 'add_scale_bar' not in globals():
-    def add_scale_bar(ax, length_km=500):
-        # Adds a visual scale cue near the bottom-left
-        ax.annotate(f'|←─ {length_km} km ─→|', xy=(0.05, 0.05), xycoords='axes fraction',
-                    fontsize=9, fontweight='bold')
+# Helper functions
+def add_north_arrow(ax):
+  ax.annotate(
+      '▲\nN',
+      xy=(0.95, 0.92),
+      xycoords='axes fraction',
+      fontsize=13,
+      fontweight='bold',
+      ha='center',
+      va='center',
+  )
 
-# Rebuild the 'merged' dataset properly to include Male and Female columns
-if 'df_m' in globals() and 'geom_gdf' in globals():
-    matched_df = df_m[df_m["geo_idx"].notna()].copy()
-    matched_df["geo_idx"] = matched_df["geo_idx"].astype(int)
-    agg = matched_df.groupby("geo_idx").agg(
-        TotalVaccinated=("TotalVaccinated", "sum"),
-        FullyVaccinated=("FullyVaccinated", "sum"),
-        Male=("Male", "sum"),
-        Female=("Female", "sum"),
-        State=("State", "first"),
-        District=("District", "first")
-    ).reset_index()
-    geometry_df = geom_gdf.copy()
-    geometry_df["geo_idx"] = geometry_df.index
-    merged = geometry_df.merge(agg, on="geo_idx", how="left")
 
-# Compute Ratio using corrected column names 'Female' and 'Male'
-female = pd.to_numeric(
-    merged['Female'], errors='coerce'
-).fillna(0)
-male = pd.to_numeric(
-    merged['Male'], errors='coerce'
-).fillna(1)
+def add_scale_bar(ax, length_km=500):
+  ax.annotate(
+      f'|←─ {length_km} km ─→|',
+      xy=(0.06, 0.08),
+      xycoords='axes fraction',
+      fontsize=9,
+      fontweight='bold',
+      bbox=dict(boxstyle='square,pad=0.25', fc='white', ec='none', alpha=0.7),
+  )
+
+
+def lat_formatter(x, pos):
+  direction = 'N' if x > 0 else ('S' if x < 0 else '')
+  return f'{abs(x):g}°{direction}'
+
+
+def lon_formatter(x, pos):
+  direction = 'E' if x > 0 else ('W' if x < 0 else '')
+  return f'{abs(x):g}°{direction}'
+
+
+# Prepare merged dataset
+matched_df = df_m[df_m['geo_idx'].notna()].copy()
+matched_df['geo_idx'] = matched_df['geo_idx'].astype(int)
+
+agg = (
+    matched_df.groupby('geo_idx')
+    .agg(
+        TotalVaccinated=('TotalVaccinated', 'sum'),
+        FullyVaccinated=('FullyVaccinated', 'sum'),
+        Male=('Male', 'sum'),
+        Female=('Female', 'sum'),
+        State=('State', 'first'),
+        District=('District', 'first'),
+    )
+    .reset_index()
+)
+
+geometry_df = geom_gdf.copy()
+geometry_df['geo_idx'] = geometry_df.index
+merged = geometry_df.merge(agg, on='geo_idx', how='left')
+
+# Compute Ratio
+female = pd.to_numeric(merged['Female'], errors='coerce').fillna(0)
+male = pd.to_numeric(merged['Male'], errors='coerce').fillna(1)
 merged['gender_ratio'] = female / male
 
+# Plotting
 fig, ax = plt.subplots(figsize=(9, 10), dpi=300)
 
-# Use TwoSlopeNorm so 1.0 (Gender Parity) is the neutral center
 norm = mcolors.TwoSlopeNorm(vmin=0.60, vcenter=1.00, vmax=1.30)
 merged.plot(
     column='gender_ratio',
-    cmap='PRGn',  # Purple for Male-biased (<1.0), Green for Female-biased (>1.0)
+    cmap='PRGn',
     norm=norm,
     legend=True,
     ax=ax,
@@ -58,12 +82,39 @@ merged.plot(
             'Female-to-Male Dose Administration Ratio (1.0 = Gender Parity)'
         ),
         'orientation': 'horizontal',
-        'shrink': 0.7,
-        'pad': 0.02,
+        'shrink': 0.70,
+        'pad': 0.06,
+        'aspect': 28,
     },
 )
 
-ax.axis('off')
+# --- Remove Axis Titles ---
+ax.set_xlabel('')
+ax.set_ylabel('')
+
+# --- Clean Coordinates & De-clutter Ticks ---
+ax.grid(False)
+
+ax.xaxis.set_major_locator(mticker.MultipleLocator(4))
+ax.yaxis.set_major_locator(mticker.MultipleLocator(4))
+
+ax.xaxis.set_major_formatter(mticker.FuncFormatter(lon_formatter))
+ax.yaxis.set_major_formatter(mticker.FuncFormatter(lat_formatter))
+
+ax.tick_params(
+    axis='both',
+    which='both',
+    direction='out',
+    length=4,
+    labelsize=8.5,
+    colors='#222222',
+)
+
+for spine in ax.spines.values():
+  spine.set_linewidth(0.8)
+  spine.set_edgecolor('#333333')
+
+# Elements placement
 add_north_arrow(ax)
 add_scale_bar(ax, length_km=500)
 
