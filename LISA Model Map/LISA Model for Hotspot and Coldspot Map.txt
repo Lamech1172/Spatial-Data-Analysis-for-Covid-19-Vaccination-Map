@@ -5,6 +5,7 @@ from libpysal.weights import Queen
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, to_hex
+from matplotlib.ticker import FixedLocator, FuncFormatter
 import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
@@ -28,7 +29,7 @@ plt.rcParams.update(
 # ---------------------------------------------------------
 # Cartographic Functions (North Arrow & Segmented Scale Bar)
 # ---------------------------------------------------------
-def draw_north_arrow(ax, x=0.08, y=0.18, length=0.07):
+def draw_north_arrow(ax, x=0.08, y=0.22, length=0.07):
     """Draws a standard two-tone cartographic North arrow."""
     ax.annotate(
         "N",
@@ -96,28 +97,43 @@ def draw_scale_bar(ax, x_min=68.5, y_pos=7.8, segment_km=250):
 
 
 # ---------------------------------------------------------
-# 1. Geometry Loader / Mock Builder
+# Geographic Coordinate Formatters (Degree formatting without descriptive text)
+# ---------------------------------------------------------
+def lon_formatter(val, pos):
+    deg = int(abs(val))
+    return f"{deg}°E" if val > 0 else (f"{deg}°W" if val < 0 else "0°")
+
+
+def lat_formatter(val, pos):
+    deg = int(abs(val))
+    return f"{deg}°N" if val > 0 else (f"{deg}°S" if val < 0 else "0°")
+
+
+# ---------------------------------------------------------
+# 1. Geometry Loader / Mock Builder (Upload File Support)
 # ---------------------------------------------------------
 def load_or_create_geometries(filepath=None):
-    if filepath and os.path.exists(filepath):
-        try:
-            gdf = gpd.read_file(filepath)
-            if not gdf.empty:
-                return gdf
-        except Exception as e:
-            print(f"Failed to read file: {e}")
+    # Check directly uploaded local files first
+    candidate_paths = [
+        filepath,
+        "in_district.json",
+        "in_district(1).json",
+        "/content/in_district(1).json",
+        "/content/in_district.json",
+        "india_districts.geojson",
+    ]
+    for p in candidate_paths:
+        if p and os.path.exists(p):
+            try:
+                print(f"Loading user uploaded boundary file: {p}")
+                gdf = gpd.read_file(p)
+                if not gdf.empty:
+                    return gdf
+            except Exception as e:
+                print(f"Failed to read {p}: {e}")
 
-    # Fallback download: official post-2020 boundary map with 38 TN districts
-    fallback_url = "https://raw.githubusercontent.com/datameet/Indian_Admin_Boundary_Maps/master/Districts/india_district.geojson"
-    try:
-        print("Downloading official district boundaries...")
-        gdf = gpd.read_file(fallback_url)
-        if not gdf.empty:
-            return gdf
-    except Exception:
-        pass
-
-    print("Loading fallback district lattice for India...")
+    # Fallback district lattice for offline/standalone execution
+    print("No local file found. Generating fallback district lattice...")
     np.random.seed(42)
     step = 1.0
     gx, gy = np.meshgrid(np.arange(69.0, 95.0, step), np.arange(8.5, 36.0, step))
@@ -150,7 +166,7 @@ def load_or_create_geometries(filepath=None):
     )
 
 
-GEOJSON_PATH = "/content/in_district(1).json"
+GEOJSON_PATH = "in_district.json"
 gdf = load_or_create_geometries(GEOJSON_PATH)
 
 # Clean geometry invalidities (fixes micro self-intersections causing holes)
@@ -213,7 +229,7 @@ bins = [
 ]
 
 labels_panel_a = [
-    f"{bins[i]:,.2f} - {bins[i+1]:,.2f}" for i in range(len(bins) - 1)
+    f"{bins[i]:,.2f} – {bins[i+1]:,.2f}" for i in range(len(bins) - 1)
 ]
 
 dose_bins = pd.cut(
@@ -251,7 +267,7 @@ gdf.plot(
 )
 
 axes[0].set_title(
-    "(a) Total Doses Administered", fontsize=12, fontweight="bold", pad=10
+    "a)", loc="left", fontsize=13, fontweight="bold", pad=10
 )
 axes[0].set_xlim(xlims)
 axes[0].set_ylim(ylims)
@@ -262,10 +278,10 @@ axes[0].text(68.0, 18.0, "ARABIAN SEA", fontsize=10, fontstyle="italic", color="
 axes[0].text(85.5, 18.0, "BAY OF BENGAL", fontsize=10, fontstyle="italic", color="#555555")
 
 # Cartographic markers
-draw_north_arrow(axes[0], x=0.08, y=0.18)
+draw_north_arrow(axes[0], x=0.08, y=0.22)
 draw_scale_bar(axes[0], x_min=68.5, y_pos=7.5, segment_km=250)
 
-# Panel (a) Legend
+# Panel (a) Legend (Upper Right, clear of Andaman & Nicobar in lower right)
 handles_a = [
     mpatches.Patch(facecolor=color_mapping_a[lbl], edgecolor="#666666", lw=0.5, label=lbl)
     for lbl in labels_panel_a
@@ -304,8 +320,9 @@ gdf.plot(
 )
 
 axes[1].set_title(
-    "(b) LISA Hotspot & Coldspot Analysis",
-    fontsize=12,
+    "b)",
+    loc="left",
+    fontsize=13,
     fontweight="bold",
     pad=10,
 )
@@ -314,10 +331,10 @@ axes[1].set_ylim(ylims)
 axes[1].set_facecolor("#ffffff")
 
 # Cartographic markers
-draw_north_arrow(axes[1], x=0.08, y=0.18)
+draw_north_arrow(axes[1], x=0.08, y=0.22)
 draw_scale_bar(axes[1], x_min=68.5, y_pos=7.5, segment_km=250)
 
-# Panel (b) Legend
+# Panel (b) Legend (Upper Right so it does NOT cover Andaman & Nicobar at 92°–94°E, 6°–14°N)
 lisa_labels = {
     0: "Not Significant",
     1: "Hotspot (High-High)",
@@ -334,8 +351,7 @@ leg_b = axes[1].legend(
     handles=handles_b,
     title="LISA Cluster Type",
     title_fontsize=9.5,
-    loc="lower right",
-    bbox_to_anchor=(0.96, 0.06),
+    loc="upper right",
     fontsize=8.5,
     frameon=True,
     facecolor="#ffffff",
@@ -344,14 +360,38 @@ leg_b = axes[1].legend(
 )
 leg_b.get_title().set_fontweight("bold")
 
-# Borders and tick cleanup
+# ---------------------------------------------------------
+# Coordinate Graticule & Tick Configuration
+# ---------------------------------------------------------
 for ax in axes:
+    ax.set_aspect("equal")
+
+    # Explicit tick locations
+    ax.xaxis.set_major_locator(FixedLocator([70, 80, 90]))
+    ax.yaxis.set_major_locator(FixedLocator([10, 15, 20, 25, 30, 35]))
+
+    # Geographic degree formatting (e.g., 70°E, 15°N)
+    ax.xaxis.set_major_formatter(FuncFormatter(lon_formatter))
+    ax.yaxis.set_major_formatter(FuncFormatter(lat_formatter))
+
+    # Ensure no axis titles like 'Geodetic Latitude [degree]' or 'Geodetic Longitude [degree]' exist
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+
+    ax.tick_params(axis="x", labelsize=10, direction="out", length=4, width=1.0, color="#333333")
+    ax.tick_params(axis="y", labelsize=10, rotation=90, direction="out", length=4, width=1.0, color="#333333")
+
+    for tick in ax.get_xticklabels():
+        tick.set_fontweight("bold")
+    for tick in ax.get_yticklabels():
+        tick.set_fontweight("bold")
+        tick.set_va("center")
+
+    # Spines
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color("#333333")
         spine.set_linewidth(1.0)
-    ax.set_xticks([])
-    ax.set_yticks([])
 
 plt.tight_layout()
 plt.show()
