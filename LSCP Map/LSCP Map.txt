@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon, Circle, Patch
 from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter, FixedLocator
 from scipy.spatial import Voronoi
 
 # =========================================================
@@ -92,7 +93,6 @@ def load_polygons_from_geojson(filepath):
         coords = geom.get("coordinates", [])
 
         if gtype == "Polygon":
-            # Exterior ring is at index 0
             ring = np.array(coords[0])
             if ring.ndim == 2 and len(ring) >= 3:
                 polygons.append(ring[:, :2])
@@ -111,7 +111,6 @@ def load_polygons_from_geojson(filepath):
 # =========================================================
 # 2. Load Data & Classify Empirical Statuses
 # =========================================================
-# Replace "india_districts.geojson" with your own GeoJSON file path if needed
 district_polygons, district_centroids = load_polygons_from_geojson(GEOJSON_FILE)
 
 np.random.seed(42)
@@ -140,29 +139,45 @@ for cx, cy in district_centroids:
 # 3. Map Annotations (North Arrow & Scale Bar)
 # =========================================================
 def draw_north_arrow(ax, min_x, max_y):
-    x, y = min_x + 1.8, max_y - 2.8
-    left_wing = MplPolygon([[x, y + 1.8], [x - 0.7, y - 0.4], [x, y + 0.2]],
-                           closed=True, facecolor='black', edgecolor='black', zorder=10)
-    right_wing = MplPolygon([[x, y + 1.8], [x + 0.7, y - 0.4], [x, y + 0.2]],
-                            closed=True, facecolor='white', edgecolor='black', zorder=10)
+    # Properly placed in the upper-left quadrant clear of borders
+    x = min_x + 2.6
+    y = max_y - 4.2
+    
+    # Left (black) wing
+    left_wing = MplPolygon([[x, y + 2.2], [x - 0.75, y - 0.4], [x, y + 0.3]],
+                           closed=True, facecolor='black', edgecolor='black', lw=0.8, zorder=12)
+    # Right (white) wing
+    right_wing = MplPolygon([[x, y + 2.2], [x + 0.75, y - 0.4], [x, y + 0.3]],
+                            closed=True, facecolor='white', edgecolor='black', lw=0.8, zorder=12)
     ax.add_patch(left_wing)
     ax.add_patch(right_wing)
-    ax.text(x, y + 2.0, 'N', fontsize=10, fontweight='bold', ha='center', va='bottom', zorder=10)
+    ax.text(x, y + 2.5, 'N', fontsize=12, fontweight='bold', ha='center', va='bottom', zorder=12)
 
 def draw_scale_bar(ax, min_x, min_y):
-    x0, x1, y = min_x + 0.8, min_x + 7.8, min_y + 1.0
+    x0, x1, y = min_x + 1.2, min_x + 8.0, min_y + 1.2
     ax.plot([x0, x0], [y - 0.4, y + 0.4], color='#333333', lw=1.2, zorder=10)
     ax.plot([x1, x1], [y - 0.4, y + 0.4], color='#333333', lw=1.2, zorder=10)
     ax.annotate('', xy=(x0, y), xytext=(x0 + 1.6, y),
                 arrowprops=dict(arrowstyle='->', color='#333333', lw=1.0))
     ax.annotate('', xy=(x1, y), xytext=(x1 - 1.6, y),
                 arrowprops=dict(arrowstyle='->', color='#333333', lw=1.0))
-    ax.text((x0 + x1) / 2, y, '500 km', fontsize=9.5, ha='center', va='center', color='#222222')
+    ax.text((x0 + x1) / 2, y, '500 km', fontsize=9.5, ha='center', va='center', color='#222222', zorder=10)
 
 # =========================================================
-# 4. Render Dual Panels from Loaded GeoJSON Polygons
+# 4. Latitude and Longitude Tick Formatters
 # =========================================================
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7.2), facecolor='white')
+def lon_formatter(val, pos):
+    deg = int(abs(val))
+    return f"{deg}°E" if val > 0 else (f"{deg}°W" if val < 0 else "0°")
+
+def lat_formatter(val, pos):
+    deg = int(abs(val))
+    return f"{deg}°N" if val > 0 else (f"{deg}°S" if val < 0 else "0°")
+
+# =========================================================
+# 5. Render Dual Panels from Loaded GeoJSON Polygons
+# =========================================================
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7.5), facecolor='white')
 
 C_BASE_DIST = '#F2EFE6'
 C_DESERT = '#FBB929'
@@ -240,15 +255,34 @@ leg2 = ax2.legend(handles=leg2_handles, loc='lower right', title='Optimized Siti
 leg2.get_title().set_fontweight('bold')
 leg2.set_zorder(15)
 
+# Panel identifiers a) and b)
+ax1.set_title('a)', loc='left', fontsize=13, fontweight='bold', pad=8)
+ax2.set_title('b)', loc='left', fontsize=13, fontweight='bold', pad=8)
+
 for ax in (ax1, ax2):
     ax.set_xlim(min_x, max_x)
     ax.set_ylim(min_y, max_y)
     ax.set_aspect('equal')
-    ax.set_xticks([])
-    ax.set_yticks([])
+
+    # Latitude and Longitude Tick Formatting (Fixed locations & dynamic formatters)
+    ax.xaxis.set_major_locator(FixedLocator([70, 80, 90]))
+    ax.xaxis.set_major_formatter(FuncFormatter(lon_formatter))
+    
+    ax.yaxis.set_major_locator(FixedLocator([10, 15, 20, 25, 30, 35]))
+    ax.yaxis.set_major_formatter(FuncFormatter(lat_formatter))
+
+    ax.tick_params(axis='x', labelsize=10, direction='out', length=4, width=1.0, color='#444444')
+    ax.tick_params(axis='y', labelsize=10, rotation=90, direction='out', length=4, width=1.0, color='#444444')
+    
+    for tick in ax.get_xticklabels():
+        tick.set_fontweight('bold')
+    for tick in ax.get_yticklabels():
+        tick.set_fontweight('bold')
+        tick.set_va('center')
+
     for spine in ax.spines.values():
         spine.set_edgecolor('#444444')
         spine.set_linewidth(1.0)
 
-plt.subplots_adjust(wspace=0.04, left=0.02, right=0.98, top=0.98, bottom=0.02)
+plt.subplots_adjust(wspace=0.12, left=0.06, right=0.98, top=0.95, bottom=0.06)
 plt.show()
